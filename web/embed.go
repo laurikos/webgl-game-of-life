@@ -1,20 +1,14 @@
 package web
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
-//go:embed *
-var embededFiles embed.FS
+//go:embed index.html app.js shaders.js styles.css
+var content embed.FS
 
-type ServeContent struct {
-	GameOfLife embed.FS
-}
-
-func NewServeContent() *ServeContent {
-	return &ServeContent{
-		GameOfLife: embededFiles,
-	}
-}
-
-func (s *ServeContent) GetContent() embed.FS {
-	return s.GameOfLife
+// Content contains only the public assets, excluding Go source and future files.
+func Content() fs.FS {
+	return content
 }

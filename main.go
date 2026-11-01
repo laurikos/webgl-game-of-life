@@ -2,101 +2,66 @@ package main
 
 import (
 	"context"
-	"embed"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/laurikos/webgl-game-of-life/web"
 )
 
-type HTTPServer struct {
-	srv     *http.Server
-	content embed.FS
-}
-
-func newHTTPServer(addr string) *HTTPServer {
-	webContents := web.NewServeContent()
-	server := HTTPServer{
-		content: webContents.GetContent(),
-	}
-
-	s := http.Server{
-		Addr:           addr,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
-		IdleTimeout:    120 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
-
+func newHTTPServer(addr string) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", server.serveWebContent)
+	mux.Handle("/", http.FileServer(http.FS(web.Content())))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-
-	s.Handler = mux
-
-	server.srv = &s
-
-	return &server
-
-}
-
-func (server *HTTPServer) serveWebContent(w http.ResponseWriter, r *http.Request) {
-
-	http.FileServer(http.FS(server.content)).ServeHTTP(w, r)
-
-}
-
-func (server *HTTPServer) Start() error {
-	idleConnsClosed := make(chan struct{})
-	go func() {
-		sigint := make(chan os.Signal, 1)
-		signal.Notify(sigint, os.Interrupt)
-		<-sigint
-
-		if err := server.srv.Shutdown(context.Background()); err != nil {
-			log.Printf("HTTP server Shutdown: %v", err)
-		}
-		close(idleConnsClosed)
-
-	}()
-
-	log.Printf("Starting serving web contents on %s", server.srv.Addr)
-
-	if err := server.srv.ListenAndServe(); err != http.ErrServerClosed {
-		return err
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
-
-	<-idleConnsClosed
-
-	return nil
 }
 
-var flagServeAddr string
-
-func parseFlags() {
-
-	flag.StringVar(&flagServeAddr, "addr", ":9000", "address to serve the web content")
-
-	flag.Parse()
-
+func serve(ctx context.Context, server *http.Server) error {
+	result := make(chan error, 1)
+	go func() { result <- server.ListenAndServe() }()
+	select {
+	case err := <-result:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return err
+		}
+		if err := <-result; !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
 }
 
 func main() {
-
-	parseFlags()
-
-	server := newHTTPServer(flagServeAddr)
-
-	if err := server.Start(); err != nil {
-		log.Fatalf("Failed to start HTTP server: %v", err)
+	addr := flag.String("addr", "127.0.0.1:9000", "address to serve the web content")
+	flag.Parse()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	log.Printf("Serving web content on %s", *addr)
+	if err := serve(ctx, newHTTPServer(*addr)); err != nil {
+		log.Fatalf("HTTP server failed: %v", err)
 	}
-
-	log.Printf("HTTP server stopped")
-
+	log.Print("HTTP server stopped")
 }

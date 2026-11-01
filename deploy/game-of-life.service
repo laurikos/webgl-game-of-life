@@ -1,0 +1,18 @@
+[Unit]
+Description=WebGL Game of Life
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/opt/game-of-life/game-of-life-server --addr=127.0.0.1:9000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
